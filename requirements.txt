@@ -1,0 +1,5 @@
+# CS1 -> CS2 Asset Converter dependencies
+# Install with: pip install -r requirements.txt
+
+Pillow>=10.0.0
+numpy>=1.24.0
