@@ -223,6 +223,23 @@ class AssetFolder:
             if   i == 0 and not ts.diffuse:  ts.diffuse  = f
             elif i == 1 and not ts.normal:   ts.normal   = f
             elif i == 2 and not ts.specular: ts.specular = f
+        # Discard uniform placeholder textures (all-white or all-black).
+        # ModTools "Dump All" produces these when a slot has no real data.
+        if PILLOW_OK:
+            for attr in ("alpha", "illumination", "specular"):
+                path = getattr(ts, attr)
+                if path:
+                    try:
+                        arr = np.array(Image.open(str(path)).convert("L"),
+                                       dtype=np.float32) / 255.0
+                        mean_val = float(arr.mean())
+                        if mean_val > 0.98 or mean_val < 0.02:
+                            log.info(f"  Discarding {path.name} "
+                                     f"(uniform {mean_val:.2f} — placeholder)")
+                            setattr(ts, attr, None)
+                    except Exception:
+                        pass
+
         result.cs1_textures = ts
 
         # ── Log scan results ──
@@ -686,23 +703,55 @@ class TextureConverter:
     def _mask_map(self) -> Path:
         """
         CS2 MaskMap:
-          R = Metallic   (0 = not metallic)
-          G = Coat       (0 = no coat layer)
-          B = Unused     (0 = black)
-          A = Glossiness (0 = fully matte)
+          R = Metallic   (0 — buildings are not metallic)
+          G = Coat       (0 — no coat layer)
+          B = Unused     (0 — always black)
+          A = Glossiness (derived from CS1 specular using binary threshold)
 
-        All channels zeroed out. CS1 specular maps encode gloss values that
-        produce a mirror/glass effect in CS2's PBR renderer even at low values.
-        A fully black MaskMap gives a clean matte surface that looks correct
-        for converted buildings and props. Users can manually adjust glossiness
-        in the CS2 Asset Editor material settings after import.
+        CS1 specular maps often have a bimodal distribution — near-zero for
+        walls and near-1.0 for glass/windows. Passing high CS1 specular values
+        directly into CS2 PBR makes buildings look like chrome mirrors.
+
+        Binary threshold treatment:
+          - Pixels with CS1 spec > 0.5 (glass/windows) → CS2 gloss = 0.4
+          - Pixels with CS1 spec <= 0.5 (walls/roof)   → CS2 gloss = 0.05
+        This gives glass buildings realistic-looking tinted glass in CS2
+        without the mirror effect.
+
+        If no specular map: fully matte (all zero).
         """
         size = self._target_size()
         h, w = size[1], size[0]
-        out  = np.zeros((h, w, 4), dtype=np.uint8)
-        p    = self._p("MaskMap")
+
+        if self.cs1.specular:
+            spec_img = self._resize(self._open(self.cs1.specular, "L"))
+            spec_arr = np.array(spec_img, dtype=np.float32) / 255.0
+
+            # Check if specular is all-white (useless placeholder from Dump All)
+            if spec_arr.mean() > 0.98:
+                log.info(f"  MaskMap: specular is all-white placeholder — treating as matte")
+                gloss = np.zeros((h, w), dtype=np.float32)
+            else:
+                # Binary threshold: glass vs wall
+                window_mask = spec_arr > 0.5
+                gloss = np.where(window_mask, 0.4, 0.05).astype(np.float32)
+                pct_glass = window_mask.mean() * 100
+                log.info(f"  MaskMap: {pct_glass:.0f}% glass (gloss=0.4), "
+                         f"{100-pct_glass:.0f}% wall (gloss=0.05)")
+        else:
+            gloss = np.zeros((h, w), dtype=np.float32)
+            log.info(f"  MaskMap: no specular — fully matte")
+
+        mask = np.stack([
+            np.zeros((h, w), dtype=np.float32),  # R metallic
+            np.zeros((h, w), dtype=np.float32),  # G coat
+            np.zeros((h, w), dtype=np.float32),  # B unused
+            gloss,                                 # A glossiness
+        ], axis=2)
+        out = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
+        p   = self._p("MaskMap")
         Image.fromarray(out, "RGBA").save(str(p), optimize=True)
-        log.info(f"  MaskMap      -> {p.name}  (fully matte)")
+        log.info(f"  MaskMap      -> {p.name}")
         return p
 
     def _normal(self) -> Path:
