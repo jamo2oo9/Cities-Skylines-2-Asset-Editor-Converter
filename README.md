@@ -86,18 +86,36 @@ python gui.py
 
 ### Part 1 — Export your asset from CS1
 
-You need to export the mesh and textures from CS1 using the **ModTools** mod before you can convert anything.
+You need to export the mesh and textures from CS1 using the **ModTools** mod first.
 
 1. Subscribe to **ModTools** on the CS1 Steam Workshop and launch CS1
-2. Load a city that contains the building or prop you want to convert
-3. Press **Ctrl+E** to open Scene Explorer
-4. Search for your asset by name (e.g. `HibbingHighSchool`)
-5. Inside the asset, find **`m_mesh`** → click the arrow → **Dump mesh to OBJ**
-6. Find **`m_material`** → dump each texture (diffuse, normal, specular, illumination)
-7. All files save to:
+2. Load a city that contains the building or prop you want to convert, or open it in the CS1 Asset Editor
+3. **Click on the building or prop** in-game to select it
+4. A small ModTools panel appears — click **Dump Asset**
+5. All files are saved automatically to:
    ```
    C:\Users\<you>\AppData\Local\Colossal Order\Cities_Skylines\Addons\Import\
    ```
+
+Alternatively via Scene Explorer (Ctrl+E):
+- Find your asset under `Tool Controller > BuildingTool > m_prefab`
+- Click the **Dump** button next to the prefab name
+
+**What ModTools produces:**
+
+| File | Contents |
+|------|---------|
+| `AssetName.obj` | Main mesh |
+| `AssetName_lod.obj` | LOD mesh |
+| `AssetName_d.png` | Diffuse (colour) texture |
+| `AssetName_n.png` | Normal map |
+| `AssetName_s.png` | Specular map |
+| `AssetName_a.png` | Alpha mask (if applicable) |
+| `AssetName_i.png` | Illumination map |
+| `AssetName_aci.png` | **Combined:** Alpha + Colour + Illumination (auto-split by converter) |
+| `AssetName_xys.png` | **Combined:** Normal XY + Specular (auto-split by converter) |
+
+> **Note:** Some assets produce combined `_aci` and `_xys` textures instead of individual maps. The converter handles these automatically — just include all dumped files in the same folder.
 
 ### Part 2 — Convert with this tool
 

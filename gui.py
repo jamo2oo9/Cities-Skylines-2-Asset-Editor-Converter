@@ -71,31 +71,44 @@ class App(tk.Tk):
 
     GUIDE_STEPS = [
         ("Step 1", "Subscribe to ModTools",
-         "In Steam, search the CS1 Workshop for 'ModTools' by Gameranx/klyte45 and subscribe.\n"
-         "Then launch CS1 — ModTools loads automatically."),
+         "In Steam, search the CS1 Workshop for 'ModTools' and subscribe.\n"
+         "Launch CS1 — ModTools loads automatically.\n"
+         "Workshop link: steamcommunity.com/sharedfiles/filedetails/?id=2434651215"),
         ("Step 2", "Load a city with your asset",
-         "Open any saved city in CS1 that uses the building/prop you want to convert.\n"
-         "Or start a new game and place the asset from the menu first."),
-        ("Step 3", "Open ModTools Scene Explorer",
-         "Press Ctrl+E to open Scene Explorer.\n"
-         "In the search box at the top, type the asset's name (e.g. HibbingHighSchool)\n"
-         "and press Enter to find it."),
-        ("Step 4", "Dump the mesh",
-         "In Scene Explorer, expand the asset and find 'm_mesh'.\n"
-         "Click the small arrow next to it, then click 'Dump mesh to OBJ'.\n"
-         "The .obj file saves to:  AppData\\Local\\Colossal Order\\Cities_Skylines\\Addons\\Import"),
-        ("Step 5", "Dump the textures",
-         "Still in Scene Explorer, find 'm_material' inside the asset.\n"
-         "Click 'Dump diffuse', 'Dump normal', 'Dump specular', 'Dump illumination'.\n"
-         "These also save to the same Import folder as the mesh."),
-        ("Step 6", "Gather your files",
-         "Go to the Import folder and collect the .obj and all texture .png files.\n"
-         "Put them all into ONE folder together — name the folder after your asset.\n"
-         "Example:  MyAssets\\HibbingHighSchool\\  containing  .obj + _d.png + _n.png etc."),
-        ("Step 7", "Convert with this tool",
-         "Come back here, click 'Add asset folder', select the folder you just made,\n"
-         "set your output location, and click Convert.\n"
-         "The CS2-ready files will appear in your output folder."),
+         "Open any saved city in CS1 that has the building/prop you want to convert.\n"
+         "Or start a new city and place the asset from the menu first."),
+        ("Step 3", "Click the asset to select it",
+         "Click directly on the building or prop in-game.\n"
+         "A small ModTools info panel will appear showing the asset name."),
+        ("Step 4", "Click Dump Asset",
+         "In the ModTools panel that appears, click the 'Dump Asset' button.\n"
+         "ModTools exports the mesh (.obj) and all textures (.png) automatically.\n"
+         "Files are saved to:\n"
+         "  AppData\\Local\\Colossal Order\\Cities_Skylines\\Addons\\Import\\"),
+        ("Step 5", "What files you get",
+         "ModTools produces these files (not all assets have all of them):\n"
+         "  AssetName.obj          — main mesh\n"
+         "  AssetName_lod.obj      — LOD mesh\n"
+         "  AssetName_d.png        — diffuse (colour)\n"
+         "  AssetName_n.png        — normal map\n"
+         "  AssetName_s.png        — specular map\n"
+         "  AssetName_a.png        — alpha mask\n"
+         "  AssetName_i.png        — illumination map\n"
+         "  AssetName_aci.png      — combined Alpha+Colour+Illumination (auto-split)\n"
+         "  AssetName_xys.png      — combined Normal+Specular (auto-split)\n"
+         "The converter handles _aci and _xys combined textures automatically."),
+        ("Step 6", "Add the folder to this tool",
+         "Click '+ Add folder' and select the Import folder (or a subfolder you\n"
+         "created containing just that asset's files).\n"
+         "Set your output location and click Convert."),
+        ("Step 7", "Import into CS2",
+         "Open CS2 → Editor → Asset Editor → Asset Importer.\n"
+         "Set Project Root = your cs2_output folder.\n"
+         "Set Assets Folder = the subfolder with your converted files.\n"
+         "Choose a Prefab Preset and click Import.\n"
+         "If textures look wrong, delete:\n"
+         "  AppData\\LocalLow\\Colossal Order\\Cities Skylines II\\ImportedData\\\n"
+         "then restart CS2 and reimport."),
     ]
 
     def __init__(self):

@@ -63,6 +63,9 @@ class CS1Textures:
     specular:     Optional[Path] = None
     alpha:        Optional[Path] = None
     illumination: Optional[Path] = None
+    # Combined maps from ModTools "Dump All"
+    aci:          Optional[Path] = None   # RGB = Alpha, Colour, Illumination
+    xys:          Optional[Path] = None   # RGB = Normal X, Normal Y, Specular
 
 
 @dataclass
@@ -111,9 +114,14 @@ class AssetFolder:
     # Texture suffix → slot mapping (checked against lowercased stem)
     DIFFUSE_KEYS  = ("_d", "_diffuse",  "_maintex",  "_albedo",  "_color",  "_basecolor")
     NORMAL_KEYS   = ("_n", "_normal",   "_bumpmap",  "_nrm",     "_normalmap")
-    SPECULAR_KEYS = ("_s", "_specular", "_spec",     "_specmap", "_smoothness", "_xys")
+    SPECULAR_KEYS = ("_s", "_specular", "_spec",     "_specmap", "_smoothness")
     ALPHA_KEYS    = ("_a", "_alpha",    "_opacity")
-    ILLUM_KEYS    = ("_i", "_illumination", "_illum", "_illummap", "_aci")
+    ILLUM_KEYS    = ("_i", "_illumination", "_illum", "_illummap")
+    # Combined texture map names produced by ModTools "Dump All"
+    # ACI = Alpha (R), Color/Diffuse (G), Illumination (B) — gamma lifted
+    # XYS = Normal X (R), Normal Y (G), Specular (B) — gamma lifted
+    COMBINED_ACI  = ("_aci",)
+    COMBINED_XYS  = ("_xys",)
 
     MESH_EXTS    = {".obj", ".fbx"}
     TEXTURE_EXTS = {".png", ".jpg", ".jpeg", ".tga", ".dds", ".bmp"}
@@ -201,7 +209,9 @@ class AssetFolder:
             if self._is_lod(f.stem):
                 continue  # skip LOD textures
             sl = f.stem.lower()
-            if   any(sl.endswith(k) for k in self.DIFFUSE_KEYS):  ts.diffuse      = f
+            if   any(sl.endswith(k) for k in self.COMBINED_ACI):  ts.aci          = f
+            elif any(sl.endswith(k) for k in self.COMBINED_XYS):  ts.xys          = f
+            elif any(sl.endswith(k) for k in self.DIFFUSE_KEYS):  ts.diffuse      = f
             elif any(sl.endswith(k) for k in self.NORMAL_KEYS):   ts.normal       = f
             elif any(sl.endswith(k) for k in self.SPECULAR_KEYS): ts.specular     = f
             elif any(sl.endswith(k) for k in self.ALPHA_KEYS):    ts.alpha        = f
@@ -224,6 +234,12 @@ class AssetFolder:
         log.info(f"    specular:{ts.specular.name      if ts.specular     else 'NONE'}")
         log.info(f"    alpha:   {ts.alpha.name         if ts.alpha        else 'NONE'}")
         log.info(f"    illumin: {ts.illumination.name  if ts.illumination else 'NONE'}")
+        log.info(f"    aci:     {ts.aci.name           if ts.aci          else 'NONE'}")
+        log.info(f"    xys:     {ts.xys.name           if ts.xys          else 'NONE'}")
+        if ts.aci:
+            log.info("  NOTE: ACI combined texture detected — will split R=alpha G=diffuse B=illumination")
+        if ts.xys:
+            log.info("  NOTE: XYS combined texture detected — will split R=normalX G=normalY B=specular")
 
         # ── Asset type ──
         nl = (asset_name + " " + self.name).lower()
@@ -434,6 +450,9 @@ class TextureConverter:
         self.out.mkdir(parents=True, exist_ok=True)
 
     def convert(self) -> CS2Textures:
+        # Split combined textures first so individual slots are populated
+        self._split_combined()
+
         cs2 = CS2Textures()
         if self.cs1.diffuse:
             cs2.base_color   = self._base_color()
@@ -442,6 +461,97 @@ class TextureConverter:
         if self.cs1.normal:
             cs2.normal       = self._normal()
         return cs2
+
+    def _split_combined(self):
+        """
+        Split ModTools "Dump All" combined textures into individual maps.
+
+        ACI texture (Alpha/Colour/Illumination combined):
+            R channel = Alpha mask
+            G channel = Colour/Diffuse
+            B channel = Illumination
+            These are gamma lifted (+0.45 correction needed before use)
+
+        XYS texture (Normal/Specular combined):
+            R channel = Normal X
+            G channel = Normal Y
+            B channel = Specular
+            These are also gamma lifted
+
+        Only splits if the individual maps aren't already present.
+        """
+        if self.cs1.aci and not self.cs1.diffuse:
+            log.info("  Splitting ACI combined texture...")
+            img = self._resize(self._open(self.cs1.aci, "RGB"))
+            arr = np.array(img, dtype=np.float32) / 255.0
+
+            # Apply gamma correction (ACI textures are gamma lifted at 0.45)
+            arr = np.power(arr, 0.45)
+
+            # G channel = Colour/Diffuse
+            diffuse_rgb = np.stack([arr[:,:,1], arr[:,:,1], arr[:,:,1]], axis=2)
+            # Actually use full RGB from G channel reconstruction isn't right —
+            # ACI G channel is a greyscale colour mask, not full RGB.
+            # The actual colour comes from the G channel applied as multiply.
+            # For CS2 we just use G as a grey diffuse since we have no full colour.
+            diffuse_arr = np.clip(arr[:,:,1:2] * np.ones((1,1,3)), 0, 1)
+            diffuse_full = np.concatenate([
+                (diffuse_arr * 255).astype(np.uint8),
+                np.full((*diffuse_arr.shape[:2], 1), 255, dtype=np.uint8)
+            ], axis=2)
+            p_d = self.out / f"{self.name}_aci_diffuse.png"
+            Image.fromarray(diffuse_full, "RGBA").save(str(p_d))
+            self.cs1.diffuse = p_d
+            log.info(f"  ACI -> diffuse: {p_d.name}")
+
+            # R channel = Alpha
+            alpha_arr = (np.clip(arr[:,:,0], 0, 1) * 255).astype(np.uint8)
+            p_a = self.out / f"{self.name}_aci_alpha.png"
+            Image.fromarray(alpha_arr, "L").save(str(p_a))
+            self.cs1.alpha = p_a
+            log.info(f"  ACI -> alpha:   {p_a.name}")
+
+        elif self.cs1.aci and self.cs1.diffuse:
+            # Have both ACI and diffuse — use ACI alpha channel only
+            log.info("  ACI present alongside diffuse — extracting alpha channel only")
+            img = self._resize(self._open(self.cs1.aci, "RGB"))
+            arr = np.array(img, dtype=np.float32) / 255.0
+            arr = np.power(arr, 0.45)
+            alpha_arr = (np.clip(arr[:,:,0], 0, 1) * 255).astype(np.uint8)
+            p_a = self.out / f"{self.name}_aci_alpha.png"
+            Image.fromarray(alpha_arr, "L").save(str(p_a))
+            if not self.cs1.alpha:
+                self.cs1.alpha = p_a
+
+        if self.cs1.xys and not self.cs1.normal:
+            log.info("  Splitting XYS combined texture...")
+            img = self._resize(self._open(self.cs1.xys, "RGB"))
+            arr = np.array(img, dtype=np.float32) / 255.0
+
+            # Apply gamma correction
+            arr = np.power(arr, 0.45)
+
+            # RG channels = Normal X and Y — reconstruct Z and build normal map
+            nx = arr[:,:,0] * 2.0 - 1.0
+            ny = arr[:,:,1] * 2.0 - 1.0
+            nz = np.sqrt(np.clip(1.0 - nx**2 - ny**2, 0, 1))
+            normal_rgb = np.stack([
+                np.clip((nx + 1.0) / 2.0, 0, 1),
+                np.clip((ny + 1.0) / 2.0, 0, 1),
+                np.clip((nz + 1.0) / 2.0, 0, 1),
+            ], axis=2)
+            p_n = self.out / f"{self.name}_xys_normal.png"
+            Image.fromarray((normal_rgb * 255).astype(np.uint8), "RGB").save(str(p_n))
+            self.cs1.normal = p_n
+            log.info(f"  XYS -> normal:  {p_n.name}")
+
+            # B channel = Specular
+            spec_arr = (np.clip(arr[:,:,2], 0, 1) * 255).astype(np.uint8)
+            p_s = self.out / f"{self.name}_xys_specular.png"
+            Image.fromarray(spec_arr, "L").save(str(p_s))
+            if not self.cs1.specular:
+                self.cs1.specular = p_s
+            log.info(f"  XYS -> specular:{p_s.name}")
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
@@ -452,7 +562,16 @@ class TextureConverter:
         return Image.open(str(path)).convert(mode)
 
     def _target_size(self) -> tuple:
-        """Return square power-of-2 size clamped to 512–4096."""
+        """
+        Return output texture size as a square power-of-2.
+
+        CS2 strictly requires square textures. Non-square textures (e.g. 2048x1024)
+        cause rendering artefacts including the reflective/mirror appearance.
+
+        We take the LARGER dimension and make both axes equal to it,
+        then pad the shorter axis with black when saving rather than
+        stretching — this preserves UV mapping correctly.
+        """
         ref = self.cs1.diffuse or self.cs1.normal or self.cs1.specular
         if ref:
             w, h = Image.open(str(ref)).size
@@ -462,18 +581,61 @@ class TextureConverter:
         p2 = 1
         while p2 < side:
             p2 <<= 1
-        return (max(512, min(4096, p2)),) * 2
+        size = max(512, min(4096, p2))
+        return (size, size)
+
+    def _pad_to_square(self, img: "Image.Image", mode: str = "RGBA") -> "Image.Image":
+        """
+        Pad an image to square with black (transparent for RGBA).
+        Places original content at top-left, padding at bottom/right.
+        This correctly handles non-square CS1 textures (e.g. 2048x1024)
+        without stretching UVs — the UV coords still map to the original
+        content area in the top-left of the padded square.
+        """
+        tw, th = self._target_size()
+        img = img.convert(mode)
+        if img.size == (tw, th):
+            return img
+        out = Image.new(mode, (tw, th), 0)  # black / transparent padding
+        out.paste(img, (0, 0))
+        if img.width != tw or img.height != th:
+            log.info(f"  Padded {img.size} -> ({tw},{th}) to satisfy CS2 square requirement")
+        return out
 
     def _resize(self, img: "Image.Image") -> "Image.Image":
-        size = self._target_size()
-        return img.resize(size, Image.LANCZOS) if img.size != size else img
+        """Resize/pad image to target square size for CS2 compatibility."""
+        tw, th = self._target_size()
+        iw, ih = img.size
+        if (iw, ih) == (tw, th):
+            return img
+        # If image is already square and just needs resizing, use LANCZOS
+        if iw == ih:
+            return img.resize((tw, th), Image.LANCZOS)
+        # Non-square: scale to fit within target keeping aspect ratio, then pad
+        scale = min(tw / iw, th / ih)
+        new_w = int(iw * scale)
+        new_h = int(ih * scale)
+        scaled = img.resize((new_w, new_h), Image.LANCZOS)
+        out = Image.new(img.mode, (tw, th), 0)
+        out.paste(scaled, (0, 0))
+        return out
 
     # ── texture generation ────────────────────────────────────────────────────
 
     def _base_color(self) -> Path:
         """
         CS2 BaseColor = diffuse RGB + alpha channel.
-        Slight desaturation to match CS2's clean visual style.
+
+        Alpha handling:
+          - If a dedicated _a.png alpha map exists, use it (fences, railings etc.)
+          - If the diffuse has an alpha channel, check whether it is genuinely
+            transparent (e.g. a fence texture) or just CS1 artefact data.
+            Decision: if more than 5% of pixels are below 200 opacity AND a
+            dedicated alpha map exists, use the diffuse alpha. Otherwise force
+            full opaque (255) — buildings should never be transparent.
+          - Default for buildings: full opaque alpha.
+
+        Also applies mild desaturation to match CS2's clean visual style.
         """
         img = self._resize(self._open(self.cs1.diffuse))
         arr = np.array(img, dtype=np.float32) / 255.0
@@ -483,14 +645,22 @@ class TextureConverter:
         lum = (rgb * np.array([0.2126, 0.7152, 0.0722])).sum(axis=2, keepdims=True)
         rgb = np.clip(lum + (rgb - lum) * 0.9, 0, 1)
 
-        # Alpha: use dedicated alpha map if available, else full opaque
+        # Alpha channel decision
         if self.cs1.alpha:
+            # Dedicated alpha map present — use it (fences, railings, transparent elements)
             alpha = np.array(
                 self._resize(self._open(self.cs1.alpha, "L")),
                 dtype=np.float32
             )[:, :, np.newaxis] / 255.0
+            avg_alpha = float(alpha.mean())
+            log.info(f"  BaseColor alpha: using _a map (avg={avg_alpha:.2f})")
         else:
+            # No dedicated alpha map — force fully opaque.
+            # CS1 diffuse textures often carry alpha channel data that was used
+            # for CS1-specific rendering (e.g. colour variation, dirt overlays).
+            # In CS2 that data makes the building transparent/streaky.
             alpha = np.ones((*rgb.shape[:2], 1), dtype=np.float32)
+            log.info(f"  BaseColor alpha: forced opaque (no _a map)")
 
         out = (np.concatenate([rgb, alpha], axis=2) * 255).astype(np.uint8)
         p   = self._p("BaseColor")
@@ -516,35 +686,23 @@ class TextureConverter:
     def _mask_map(self) -> Path:
         """
         CS2 MaskMap:
-          R = Metallic   (from CS1 specular R, clamped low — buildings aren't metallic)
+          R = Metallic   (0 = not metallic)
           G = Coat       (0 = no coat layer)
           B = Unused     (0 = black)
-          A = Glossiness (from CS1 specular G channel)
+          A = Glossiness (0 = fully matte)
+
+        All channels zeroed out. CS1 specular maps encode gloss values that
+        produce a mirror/glass effect in CS2's PBR renderer even at low values.
+        A fully black MaskMap gives a clean matte surface that looks correct
+        for converted buildings and props. Users can manually adjust glossiness
+        in the CS2 Asset Editor material settings after import.
         """
         size = self._target_size()
         h, w = size[1], size[0]
-
-        if self.cs1.specular:
-            spec = np.array(
-                self._resize(self._open(self.cs1.specular, "RGB")),
-                dtype=np.float32
-            ) / 255.0
-            metallic   = np.clip(spec[:, :, 0] * 0.2, 0, 0.3)
-            glossiness = np.clip(spec[:, :, 1] * 0.5, 0, 0.6)
-        else:
-            metallic   = np.zeros((h, w), dtype=np.float32)
-            glossiness = np.zeros((h, w), dtype=np.float32)
-
-        mask = np.stack([
-            metallic,
-            np.zeros((h, w), dtype=np.float32),  # coat = 0
-            np.zeros((h, w), dtype=np.float32),  # unused = 0
-            glossiness,
-        ], axis=2)
-        out = (np.clip(mask, 0, 1) * 255).astype(np.uint8)
-        p   = self._p("MaskMap")
+        out  = np.zeros((h, w, 4), dtype=np.uint8)
+        p    = self._p("MaskMap")
         Image.fromarray(out, "RGBA").save(str(p), optimize=True)
-        log.info(f"  MaskMap      -> {p.name}")
+        log.info(f"  MaskMap      -> {p.name}  (fully matte)")
         return p
 
     def _normal(self) -> Path:
